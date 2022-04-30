@@ -11,6 +11,30 @@
 #### 只实现了框架，能够读取连接请求并进行工作线程调用，具体报文处理部分还未实现
 
 --------------------------
-结果演示
 
-![image](https://user-images.githubusercontent.com/49227852/165758375-5349d95b-1db1-45cc-a782-78cfda706b80.png)
+## v-1.1 补充HTTP报文处理部分
+#### 流程
+- 当浏览器发出http连接时，主线程创建http类对象并接受请求将数据读入对应buffer，将该对象插入任务队列
+- 工作线程取出任务，调用process_read函数，通过主从状态机对请求报文解析
+- 解析完通过do_request函数生成响应报文，再通过process_write写入buffer，返回给浏览器端
+
+##### 主状态机
+  三种状态，标识解析位置
+  - CHECK_STATE_REQUESTLINE，解析请求行
+  - CHECK_STATE_HEADER，解析请求头
+  - CHECK_STATE_CONTENT，解析消息体，将用于解析POST请求
+
+##### 从状态机
+  三种状态，标识解析一行的读取状态
+  - LINE_OK，完整读取一行
+  - LINE_BAD，报文语法有误
+  - LINE_OPEN，读取的行不完整
+
+##### 解析
+- 获取请求报文，并解析请求首行、请求头和请求体
+- 获取目标请求方法（目前只实现了GET）、URL、HTTP版本号及头部信息
+- 根据URL查看本地资源，判断是否存在、访问权限、是否目录等
+- 若均满足条件，则打开文件并mmap创建内存映射，将文件映射到内存逻辑地址
+- 依据do_request状态，调用precess_write向m_write_buffer中写入响应报文
+- 通过io向量机制iovec，声明两个iovec，分别指向m_write_buffer和mmap的地址m_file_address
+- 完成响应报文后注册epollout事件，主线程将调用write将报文发送给浏览器端
