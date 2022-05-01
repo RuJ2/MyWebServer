@@ -1,5 +1,6 @@
 #include "threadpool.h"
 #include "http_conn.h"
+#include "log/log.h"
 
 const int MAX_FD = 65535;        // 最大的文件描述符个数
 const int MAX_EVENT_NUM = 10000; // 监听的最大事件数量
@@ -13,15 +14,20 @@ void addsig(int sig, void(handler)(int))
     struct sigaction sa;
     memset(&sa, '\0', sizeof(sa));
     sa.sa_handler = handler;
+    // 将信号添加到信号集中
     sigfillset(&sa.sa_mask);
+    // 执行sigaction
     sigaction(sig, &sa, NULL);
 }
 
 int main(int argc, char *argv[])
 {
+    // 初始化日志
+    Log::get_instance()->init("./ServerLog/Log", 0, 2000, 800000, 0);
     if (argc <= 1)
     {
         printf("按照如下格式运行: %s port_num\n", basename(argv[0]));
+        LOG_ERROR("%s", "Input argc failure");
         exit(-1);
     }
 
@@ -37,6 +43,7 @@ int main(int argc, char *argv[])
     }
     catch (...)
     {
+        LOG_ERROR("%s", "Create threadpoll failure");
         exit(-1);
     }
 
@@ -66,13 +73,13 @@ int main(int argc, char *argv[])
     while (true)
     {
         int num = epoll_wait(epollfd, events, MAX_EVENT_NUM, -1);
-        if ((num < 0) && (errno != EINTR))
+        if (num < 0 && errno != EINTR)
         {
             printf("epoll failure\n");
             break;
         }
 
-        // 循环遍历事件
+        // 轮询文件描述符
         for (int i = 0; i < num; ++i)
         {
             int sockfd = events[i].data.fd;
@@ -83,19 +90,27 @@ int main(int argc, char *argv[])
                 socklen_t client_addrlen = sizeof(client_address);
                 int connfd = accept(listenfd, (struct sockaddr *)&client_address, &client_addrlen);
 
+                char clientIP[16];
+                inet_ntop(AF_INET, &client_address.sin_addr.s_addr, clientIP, sizeof(clientIP));
+                printf("------------------------------------\n");
+                printf("User Ip: %s, | Port: %d \n", clientIP, ntohs(client_address.sin_port));
+
                 if (http_conn::m_user_count >= MAX_FD)
                 {
                     // 目前连接已满
                     // 给客户端写信息：服务器内部正忙
+                    printf("Internal server busy\n");
                     close(connfd);
                     continue;
                 }
                 // 将新的客户数据初始化，放到数组中
                 users[connfd].init(connfd, client_address);
+                LOG_INFO("Client(%s) is connected", clientIP);
             }
             else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR))
             {
                 // 对方异常断开或错误等事件,关闭连接
+                printf("异常断开连接\n");
                 users[sockfd].close_conn();
             }
             else if (events[i].events & EPOLLIN)
@@ -107,6 +122,7 @@ int main(int argc, char *argv[])
                 }
                 else
                 {
+                    printf("read 断开\n");
                     users[sockfd].close_conn();
                 }
             }
@@ -115,6 +131,7 @@ int main(int argc, char *argv[])
                 if (!users[sockfd].write())
                 {
                     // 一次性把所有数据写完
+                    printf("write 断开\n");
                     users[sockfd].close_conn();
                 }
             }
