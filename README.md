@@ -38,3 +38,8 @@
 - 依据do_request状态，调用precess_write向m_write_buffer中写入响应报文
 - 通过io向量机制iovec，声明两个iovec，分别指向m_write_buffer和mmap的地址m_file_address
 - 完成响应报文后注册epollout事件，主线程将调用write将报文发送给浏览器端
+
+## v-1.2 补充log部分
+- 使用单例模式创建日志系统，对服务器运行状态、错误信息和访问数据进行记录
+- 根据实际情况分别使用同步和异步写入两种方式
+- 异步写入方式，将生产者-消费者模型封装为阻塞队列，工作线程将要写内容push进队列，创建写线程读取内容，写入日志文件
