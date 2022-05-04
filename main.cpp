@@ -1,6 +1,11 @@
 #include "threadpool.h"
-#include "http_conn.h"
+#include "locker.h"
+#include "http/http_conn.h"
 #include "log/log.h"
+#include "mySQL/sql_connection_pool.h"
+
+#define SYNLOG  //同步写日志
+//#define ASYNLOG //异步写日志
 
 const int MAX_FD = 65535;        // 最大的文件描述符个数
 const int MAX_EVENT_NUM = 10000; // 监听的最大事件数量
@@ -23,7 +28,13 @@ void addsig(int sig, void(handler)(int))
 int main(int argc, char *argv[])
 {
     // 初始化日志
-    Log::get_instance()->init("./ServerLog/Log", 0, 2000, 800000, 0);
+    #ifdef ASYNLOG
+    Log::get_instance()->init("./ServerLog/Log", 2000, 800000, 8); //异步日志模型
+    #endif
+    #ifdef SYNLOG
+    Log::get_instance()->init("./ServerLog/Log", 2000, 800000, 0); //同步日志模型
+    #endif  
+
     if (argc <= 1)
     {
         printf("按照如下格式运行: %s port_num\n", basename(argv[0]));
@@ -33,13 +44,23 @@ int main(int argc, char *argv[])
 
     // 获取端口号
     int port = atoi(argv[1]);
+
     // 对SIGPIPE信号进行处理
     addsig(SIGPIPE, SIG_IGN);
+
+    //初始化数据库连接池
+    connection_pool *m_connPool = connection_pool::GetInstance();
+    string locolhost = "localhost";
+    string m_user = "root";
+    string m_passWord = "";
+    string m_databaseName = "webdb";
+    m_connPool->init("localhost", "root", "Ruj123456", "webdb", 3306, 8);
+
     // 创建线程池，初始化
     threadpool<http_conn> *pool = NULL;
     try
     {
-        pool = new threadpool<http_conn>;
+        pool = new threadpool<http_conn>(m_connPool);
     }
     catch (...)
     {
@@ -49,6 +70,10 @@ int main(int argc, char *argv[])
 
     // 创建数组用于保存客户端信息
     http_conn *users = new http_conn[MAX_FD];
+
+    // //初始化数据库读取表
+    users->initmysql_result(m_connPool);
+
 
     // 创建socket
     int listenfd = socket(PF_INET, SOCK_STREAM, 0);
