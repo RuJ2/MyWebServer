@@ -2,8 +2,9 @@
 #include <time.h>
 #include <sys/time.h>
 #include <stdarg.h>
-#include "log/log.h"
 #include <pthread.h>
+
+#include "log.h"
 using namespace std;
 
 int Log::m_close_log = 0; //关闭日志
@@ -22,7 +23,7 @@ Log::~Log()
     }
 }
 //异步需要设置阻塞队列的长度，同步不需要设置
-bool Log::init(const char *file_name, int close_log, int log_buf_size, int split_lines, int max_queue_size)
+bool Log::init(const char *file_name, int log_buf_size, int split_lines, int max_queue_size)
 {
     //如果设置了max_queue_size,则设置为异步
     if (max_queue_size >= 1)
@@ -110,7 +111,6 @@ void Log::write_log(int level, const char *format, ...)
     //m_split_lines为最大行数
     if (m_today != my_tm.tm_mday || m_count % m_split_lines == 0) //everyday log
     {
-        
         char new_log[512] = {0};
         fflush(m_fp);
         fclose(m_fp);
@@ -131,9 +131,9 @@ void Log::write_log(int level, const char *format, ...)
         }
         m_fp = fopen(new_log, "a");
     }
- 
     m_mutex.unlock();
 
+    
     va_list valst;
     va_start(valst, format);
 
