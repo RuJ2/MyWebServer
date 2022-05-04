@@ -11,6 +11,40 @@ const char *error_404_form = "The requested file was not found on this server.\n
 const char *error_500_title = "Internal Error";
 const char *error_500_form = "There was an unusual problem serving the request file.\n";
 
+map<string, string> users;
+locker m_lock;
+void http_conn::initmysql_result(connection_pool *connPool)
+{
+    //先从连接池中取一个连接
+    MYSQL *mysql = NULL;
+    connectionRAII mysqlcon(&mysql, connPool);
+
+    
+    //在user表中检索username，passwd数据，浏览器端输入
+    if (mysql_query(mysql, "SELECT username, password FROM user"))
+    {
+        LOG_ERROR("SELECT error:%s\n", mysql_error(mysql));
+    }
+
+    //从表中检索完整的结果集
+    MYSQL_RES *result = mysql_store_result(mysql);
+
+    //返回结果集中的列数
+    int num_fields = mysql_num_fields(result);
+
+    //返回所有字段结构的数组
+    MYSQL_FIELD *fields = mysql_fetch_fields(result);
+
+    //从结果集中获取下一行，将对应的用户名和密码，存入map中
+    while (MYSQL_ROW row = mysql_fetch_row(result))
+    {
+        string temp1(row[0]);
+        string temp2(row[1]);
+        users[temp1] = temp2;
+    }
+}
+
+
 void setnonblocking(int fd)
 {
     int old_flag = fcntl(fd, F_GETFL);
@@ -93,6 +127,8 @@ void http_conn::init()
     bzero(m_write_buf, WRITE_BUFFER_SIZE);
     bzero(m_real_file, FILENAME_LEN);
 
+    mysql = NULL;
+    cgi = 0;
 }
 
 // 关闭连接
@@ -105,7 +141,6 @@ void http_conn::close_conn()
         m_user_count--;
     }
 }
-
 
 
 // 循环读取客户数据，直到无数据可读或关闭连接
@@ -256,8 +291,10 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text)
     if (strcasecmp(method, "GET") == 0)
     {
         m_method = GET;
-    } else if (strcasecmp(method, "POST") == 0)
+    } else if (strcasecmp(method, "POST") == 0){
         m_method = POST;
+        cgi = 1;
+    }
     else
     {
         return BAD_REQUEST;
@@ -345,6 +382,8 @@ http_conn::HTTP_CODE http_conn::parse_content(char *text)
     if (m_read_idx >= (m_content_length + m_checked_idx))
     {
         text[m_content_length] = '\0';
+        //POST请求中最后为输入的用户名和密码
+        m_string = text;
         return GET_REQUEST;
     }
     return NO_REQUEST;
@@ -359,13 +398,106 @@ http_conn::HTTP_CODE http_conn::do_request()
     // "/home/ubuntu/myWebServer/resources"
     strcpy(m_real_file, doc_root);
     int len = strlen(doc_root);
-    strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+
+    const char *p = strrchr(m_url, '/');
+    //处理cgi
+    if (cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
+    {
+
+        //根据标志判断是登录检测还是注册检测
+        char flag = m_url[1];
+
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/");
+        strcat(m_url_real, m_url + 2);
+        strncpy(m_real_file + len, m_url_real, FILENAME_LEN - len - 1);
+        free(m_url_real);
+
+        //将用户名和密码提取出来
+        //user=123&password=123
+        char name[100], password[100];
+        int i;
+        for (i = 5; m_string[i] != '&'; ++i)
+            name[i - 5] = m_string[i];
+        name[i - 5] = '\0';
+
+        int j = 0;
+        for (i = i + 10; m_string[i] != '\0'; ++i, ++j)
+            password[j] = m_string[i];
+        password[j] = '\0';
+
+
+        if (*(p + 1) == '3')
+        {
+            //如果是注册，先检测数据库中是否有重名的
+            //没有重名的，进行增加数据
+            char *sql_insert = (char *)malloc(sizeof(char) * 200);
+            strcpy(sql_insert, "INSERT INTO user(username, password) VALUES(");
+            strcat(sql_insert, "'");
+            strcat(sql_insert, name);
+            strcat(sql_insert, "', '");
+            strcat(sql_insert, password);
+            strcat(sql_insert, "')");
+
+            //判断map中能否找到重复的用户名
+            if (users.find(name) == users.end())
+            {
+                m_lock.lock();
+                int res = mysql_query(mysql, sql_insert);
+                users.insert(pair<string, string>(name, password));
+                m_lock.unlock();
+
+                if (!res)
+                    strcpy(m_url, "/login.html");
+                else
+                    strcpy(m_url, "/registerError.html");
+            }
+            else
+                strcpy(m_url, "/registerError.html");
+        }
+        //如果是登录，直接判断
+        //若浏览器端输入的用户名和密码在表中可以查找到，返回1，否则返回0
+        else if (*(p + 1) == '2')
+        {
+            if (users.find(name) != users.end() && users[name] == password)
+                strcpy(m_url, "/welcome.html");
+            else
+                strcpy(m_url, "/logError.html");
+        }
+    }
+
+    if (*(p + 1) == '0')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/register.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '1')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/log.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '5')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/picture.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else
+        strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+    
     // 获取m_real_file文件的相关的状态信息，-1失败，0成功
     if (stat(m_real_file, &m_file_stat) < 0)
     {
         return NO_RESOURCE;
     }
-
     // 判断访问权限
     if (!(m_file_stat.st_mode & S_IROTH))
     {
@@ -449,12 +581,15 @@ bool http_conn::write()
 
 // 往写缓冲中写入待发送的数据
 bool http_conn::add_response(const char* format, ... ) {
+    // 如果写入内容超出m_write_buf大小则报错
     if( m_write_idx >= WRITE_BUFFER_SIZE ) {
         return false;
     }
-    va_list arg_list;
-    va_start( arg_list, format );
+    va_list arg_list;   //定义可变参数列表
+    va_start( arg_list, format );  //将变量arg_list初始化为传入参数
+    // 将数据format从可变参数列表写入缓冲区写，返回写入数据的长度
     int len = vsnprintf( m_write_buf + m_write_idx, WRITE_BUFFER_SIZE - 1 - m_write_idx, format, arg_list );
+    // 如果写入的数据长度超过缓冲区剩余空间，则报错
     if( len >= ( WRITE_BUFFER_SIZE - 1 - m_write_idx ) ) {
         return false;
     }
