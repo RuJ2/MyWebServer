@@ -180,7 +180,6 @@ bool http_conn::read() // 非阻塞的读
         m_read_idx += bytes_read;
     }
     // printf("读取到了数据: %s\n", m_read_buf);
-    printf("一次性读完数据\n");
     return true;
 }
 
@@ -189,7 +188,7 @@ http_conn::HTTP_CODE http_conn::process_read()
     LINE_STATUS line_status = LINE_OK;
     HTTP_CODE ret = NO_REQUEST;
     char *text = 0;
-    printf("Got http lines...\n");
+    // printf("Got http lines...\n");
     while (((m_check_state == CHECK_STATE_CONTENT) && (line_status == LINE_OK))
              || ( (line_status = parse_line()) == LINE_OK))
     {
@@ -200,7 +199,7 @@ http_conn::HTTP_CODE http_conn::process_read()
         m_start_line = m_checked_idx;
         
         // printf("Got 1 http line: %s\n", text);
-        printf("\t%s\n", text);
+        // printf("\t%s\n", text);
         switch (m_check_state)
         {
             case CHECK_STATE_REQUESTLINE:
@@ -399,7 +398,7 @@ http_conn::HTTP_CODE http_conn::parse_content(char *text)
 // 映射到内存地址m_file_address处，并告诉调用者获取文件成功
 http_conn::HTTP_CODE http_conn::do_request()
 {
-    printf("do_request\n");
+    // printf("do_request\n");
     // "/home/ubuntu/myWebServer/resources"
     strcpy(m_real_file, doc_root);
     int len = strlen(doc_root);
@@ -535,10 +534,6 @@ void http_conn::unmap()
 
 bool http_conn::write()
 {
-    int temp = 0;
-    int bytes_have_send = 0;         // 已经发送的字节
-    int bytes_to_send = m_write_idx; // 将要发送的字节 （m_write_idx）写缓冲区中待发送的字节数
-
     if (bytes_to_send == 0)
     {
         // 将要发送的字节为0，这一次响应结束。
@@ -547,26 +542,45 @@ bool http_conn::write()
         return true;
     }
 
+    int temp = 0;
     while (1)
     {
         // 分散写
         temp = writev(m_sockfd, m_iv, m_iv_count);
-        if (temp <= -1)
+        // cout << "temp: " << temp << endl;
+        // cout << "bytes_have_send: " << bytes_have_send << endl;
+        // cout << "bytes_to_send: " << bytes_to_send << endl;
+        if (temp >= 0) 
+        {
+            bytes_have_send += temp;
+            bytes_to_send -= temp;
+        }
+        else
         {
             // 如果TCP写缓冲没有空间，则等待下一轮EPOLLOUT事件，虽然在此期间，
             // 服务器无法立即接收到同一客户的下一个请求，但可以保证连接的完整性。
             if (errno == EAGAIN)
             {
+                if(bytes_have_send >= m_iv[0].iov_len)  // 头部已写完
+                {
+                    m_iv[0].iov_len = 0;
+                    m_iv[1].iov_base = m_file_address + (bytes_have_send - m_write_idx);
+                    m_iv[1].iov_len = bytes_to_send;
+                } 
+                else
+                {
+                    m_iv[0].iov_base = m_write_buf + bytes_have_send;
+                    m_iv[0].iov_len -= bytes_have_send;
+                }
+
                 modfd(m_epollfd, m_sockfd, EPOLLOUT);
                 return true;
             }
             unmap();
             return false;
         }
-        bytes_to_send -= temp;
-        bytes_have_send += temp;
         
-        if (bytes_to_send <= bytes_have_send)
+        if (bytes_to_send <= 0)
         {
             // 发送HTTP响应成功，根据HTTP请求中的Connection字段决定是否立即关闭连接
             unmap();
@@ -580,7 +594,6 @@ bool http_conn::write()
                 return false;
         }
     }
-    printf("一次性写完数据\n");
     return true;
 }
 
@@ -678,6 +691,7 @@ bool http_conn::process_write(HTTP_CODE ret)
         m_iv[1].iov_base = m_file_address;
         m_iv[1].iov_len = m_file_stat.st_size;
         m_iv_count = 2;
+        bytes_to_send = m_write_idx + m_file_stat.st_size;
         return true;
     default:
         return false;
@@ -685,6 +699,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     m_iv[ 0 ].iov_base = m_write_buf;
     m_iv[ 0 ].iov_len = m_write_idx;
     m_iv_count = 1;
+    bytes_to_send = m_write_idx;
     return true;
 }
 
@@ -693,7 +708,7 @@ bool http_conn::process_write(HTTP_CODE ret)
 void http_conn::process()
 {
     // 解析HTTP请求
-    printf("Parse request...\n");
+    // printf("Parse request...\n");
     HTTP_CODE read_ret = process_read();
     if (read_ret == NO_REQUEST)
     {
@@ -702,7 +717,7 @@ void http_conn::process()
     }
     
     // 生成响应
-    printf("Create response...\n");
+    // printf("Create response...\n");
     
     bool write_ret = process_write(read_ret);
     if (!write_ret)
